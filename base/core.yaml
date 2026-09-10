@@ -393,8 +393,8 @@ micro_wake_word:
   models:
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
       id: alexa
-    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/okay_nabu.json
-      id: okay_nabu
+    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_mycroft.json
+      id: hey_mycroft
   vad:
     model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/vad.json
   on_wake_word_detected:
@@ -609,6 +609,8 @@ light:
     chipset: WS2812
     rgb_order: RGB
     default_transition_length: 150ms
+    gamma_correct: 1.0        # do the curve in the lambda instead
+    color_correct: [100%, 100%, 100%]
     effects:
       # update_interval must be LONGER than transition_length: it is how often
       # the pulse flips its brightness target (min<->max), not a frame rate. A
@@ -664,18 +666,29 @@ light:
       # so these still read as the current assistant state.
       - addressable_lambda:
           name: "Comet"
-          update_interval: 70ms
+          update_interval: 16ms
           lambda: |-
-            static int head = 0;
+            static float head = 0.0f;
+            static float err[16] = {0};
+            if (initial_run) { head = 0.0f; for (auto &e : err) e = 0.0f; }
             const int n = it.size();
+            const float TAIL = 3.0f;
+            const float STEP = 0.22f;
+            const float scale = id(led_ring_brightness).state;
             for (int i = 0; i < n; i++) {
-              int d = (head - i + n) % n;                 // 0 at head, grows behind
-              float b = (d < 5) ? (1.0f / (1 << d)) : 0.0f;
-              it[i] = Color((uint8_t)(current_color.red   * b),
-                            (uint8_t)(current_color.green * b),
-                            (uint8_t)(current_color.blue  * b));
+              float d = fmodf(head - i + n, (float) n);
+              float b = (d < TAIL) ? (1.0f - d / TAIL) : 0.0f;
+              b *= b;
+              float want = b * scale * 255.0f;
+              float v = want + err[i];          // carry last frame's residue
+              int q = (int) (v + 0.5f);
+              if (q < 0) q = 0; else if (q > 255) q = 255;
+              err[i] = v - q;                    // keep what didn't fit
+              it[i] = Color((uint8_t) (current_color.red   * q / 255),
+                            (uint8_t) (current_color.green * q / 255),
+                            (uint8_t) (current_color.blue  * q / 255));
             }
-            head = (head + 1) % n;
+            head = fmodf(head + STEP, (float) n);
       - addressable_lambda:
           name: "Breathe"
           update_interval: 32ms
@@ -689,16 +702,24 @@ light:
             t = (t + 2) % 256;
       - addressable_lambda:
           name: "Spinner"
-          update_interval: 90ms
+          update_interval: 25ms
           lambda: |-
-            static int pos = 0;
+            static float pos = 0.0f;
+            if (initial_run) pos = 0.0f;
             const int n = it.size();
-            it.all() = Color(0, 0, 0);
-            it[pos % n] = current_color;
-            it[(pos + 1) % n] = Color((uint8_t)(current_color.red   * 0.35f),
-                                      (uint8_t)(current_color.green * 0.35f),
-                                      (uint8_t)(current_color.blue  * 0.35f));
-            pos = (pos + 1) % n;
+            const float HALF = 1.5f;   // half-width, so ~3 LEDs lit
+            const float STEP = 0.28f;
+            const float half_n = n / 2.0f;
+            for (int i = 0; i < n; i++) {
+              // shortest wrapped distance from the (fractional) centre
+              float d = fabsf(fmodf(pos - i + n + half_n, (float) n) - half_n);
+              float b = (d < HALF) ? (1.0f - d / HALF) : 0.0f;
+              b *= b;
+              it[i] = Color((uint8_t) (current_color.red   * b),
+                            (uint8_t) (current_color.green * b),
+                            (uint8_t) (current_color.blue  * b));
+            }
+            pos = fmodf(pos + STEP, (float) n);
       - addressable_lambda:
           name: "Fire"
           update_interval: 70ms
@@ -1062,13 +1083,13 @@ select:
       - lambda: |-
           if (x == "Slightly sensitive") {
             id(alexa).set_probability_cutoff(230);        // 0.90
-            id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH (manifest default)
+            id(hey_mycroft).set_probability_cutoff(230);  // 0.97
           } else if (x == "Moderately sensitive") {
             id(alexa).set_probability_cutoff(191);        // 0.75
-            id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH
+            id(hey_mycroft).set_probability_cutoff(191);  // 0.93
           } else if (x == "Very sensitive") {
             id(alexa).set_probability_cutoff(128);        // 0.50
-            id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH
+            id(hey_mycroft).set_probability_cutoff(128);  // 0.88
           }
 
   # Pick the ring animation for each voice-assistant phase, from HA, live.
