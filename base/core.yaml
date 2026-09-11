@@ -6,13 +6,24 @@
 # with announcements, the 7x WS2812 status ring, the three onboard buttons (via
 # the TCA9555 expander) and voice timers + an alarm clock.
 #
-# AUDIO LAYOUT
-# The DAC and ADC share BCLK/LRCLK pins. Two I2S buses (two ports) ride the
-# shared pins: the mic bus is I2S master (always capturing, so it drives a
-# continuous clock) and the speaker bus is a slave that reads it. The ES8311
-# (DAC) and ES7210 (ADC) are stock and slave to the mic's clock. Capture and
-# playback run at once, on stock ESPHome, with no patched es8311 / force_master.
-# The full story is in the audio section below. Pinout: docs/HARDWARE.md.
+# AUDIO PATH
+# The audio hardware layer is NOT in this file. It is a sibling package, and
+# exactly one of the two must be included alongside this file:
+#
+#   base/audio-stock.yaml  default. Two stock i2s_audio buses over the shared
+#                          BCLK/LRCLK pins (mic bus master, speaker bus slave),
+#                          es7210 + es8311. No echo cancellation.
+#   base/audio-afe.yaml    opt-in. esp_audio_stack + esp_afe: one TDM bus, echo
+#                          cancellation against the ES7210's hardware playback
+#                          reference slot, dual-mic speech enhancement.
+#
+# Whichever is included must provide these ids, which this file references:
+#   microphone  ${mic_id}                        (mWW, Assist, mute, diag)
+#   speaker     announcement_resampling_speaker  (media_player announcements)
+#   speaker     media_resampling_speaker         (media_player media)
+#   speaker     media_mixing_input               (apply_ducking target)
+#
+# Pinout: docs/HARDWARE.md.
 ###############################################################################
 
 substitutions:
@@ -52,13 +63,27 @@ substitutions:
   key3_exio: '11'           # volume up
 
   # ---------------------------------------------------------------------------
+  # Audio path bindings. The defaults are the stock path; base/audio-afe.yaml
+  # documents the values the AFE path needs (set them in your thin config).
+  # ---------------------------------------------------------------------------
+  mic_id: i2s_mics          # the microphone component mWW/Assist consume
+  log_level: DEBUG          # the AFE path wants INFO: per-frame logging on the
+                            # audio core can itself glitch the audio
+  va_volume_multiplier: '1'
+  # Delay between micro_wake_word.start and the boot chime. The stock path needs
+  # it: the speaker is a slave to the mic's I2S clock, so playing before the mic
+  # is capturing hangs the announcement. The AFE path owns both directions on one
+  # task and can use 0s.
+  boot_chime_delay: 1s
+
+  # ---------------------------------------------------------------------------
   # Home Assistant / network
   # ---------------------------------------------------------------------------
   hidden_ssid: 'false'      # true = fast_connect, required for a hidden SSID
 
   # Media player volume clamps (the onboard amp distorts near the top).
-  volume_min: '0.4'
-  volume_max: '0.8'
+  volume_min: '0.2'
+  volume_max: '0.6'
 
   # Clock timezone in POSIX form - the device has no IANA database. It is only
   # a fallback: HA's time platform syncs the clock, and the `set_time_zone` API
@@ -74,7 +99,9 @@ substitutions:
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  min_version: 2025.8.0
+  # min_version lives in the audio path package, not here: the remote-package
+  # loader parses esphome.min_version off the raw YAML before substitutions are
+  # applied, so a ${...} there fails with "Not a valid version number".
   on_boot:
     # Publish a "no timer" placeholder and paint the ring as early as we can, so
     # the device shows life while Wi-Fi/API are still coming up.
@@ -114,7 +141,7 @@ esphome:
               - logger.log: "Mic DISABLED for diagnostics"
               - micro_wake_word.stop:
               - voice_assistant.stop:
-              - microphone.stop_capture: i2s_mics
+              - microphone.stop_capture: ${mic_id}
             else:
               - logger.log: "Mic enabled"
 
@@ -159,7 +186,7 @@ wifi:
     - script.execute: control_leds
 
 logger:
-  level: DEBUG
+  level: ${log_level}
 
 api:
   id: api_id
@@ -227,94 +254,6 @@ time:
           - script.execute: check_alarm
     on_time_sync:
       - script.execute: publish_current_time
-
-# The DAC and ADC share BCLK/LRCLK pins, but ESPHome's i2s_audio cannot run one
-# bus full-duplex (the mic and speaker each call i2s_new_channel on the port, and
-# the second fails with "Parent bus is busy"). So we use TWO buses (two I2S ports)
-# over the shared pins:
-#   - i2s_input  = the MIC bus, I2S MASTER. The mic is always capturing (wake
-#     word), so it drives BCLK/LRCLK/MCLK continuously. Using the ESP as master
-#     is what makes the mic get a correct-rate stream (a codec-mastered clock via
-#     force_master gave the mic garbage and killed wake word).
-#   - i2s_output = the SPEAKER bus, I2S SLAVE. It reads the mic's clock and only
-#     needs to output data, so it never contends for a port of its own.
-# The ES8311 (DAC) and ES7210 (ADC) are stock and slave to the mic's clock; no
-# patched es8311 / force_master is needed.
-i2s_audio:
-  - id: i2s_input
-    i2s_mclk_pin: ${i2s_mclk}
-    i2s_bclk_pin:
-      number: ${i2s_bclk}
-      allow_other_uses: true
-    i2s_lrclk_pin:
-      number: ${i2s_lrclk}
-      allow_other_uses: true
-  - id: i2s_output
-    i2s_bclk_pin:
-      number: ${i2s_bclk}
-      allow_other_uses: true
-    i2s_lrclk_pin:
-      number: ${i2s_lrclk}
-      allow_other_uses: true
-
-audio_adc:
-  - platform: es7210
-    id: adc_mic
-    i2c_id: internal_i2c
-    # Runtime gain lives on the `mic_gain_db` number below. The ES7210 caps at
-    # 37.5 dB; higher values are silently clamped by the driver.
-    mic_gain: 24db
-
-audio_dac:
-  - platform: es8311
-    id: es8311_dac
-    i2c_id: internal_i2c
-
-microphone:
-  - platform: i2s_audio
-    id: i2s_mics
-    i2s_audio_id: i2s_input
-    i2s_din_pin: ${i2s_din}
-    adc_type: external
-    pdm: false
-    # default i2s_mode: primary -> this bus masters the shared clock.
-    # 16-bit on purpose: as master the mic defines the frame's slot width, and
-    # the i2s_audio default is 32-bit. The ES8311/speaker are 16-bit, so a
-    # 32-bit frame doubles the bit clock they expect and playback comes out as
-    # noise. Matching 16-bit aligns the whole bus (the ES7210 is 16-bit too).
-    bits_per_sample: 16bit
-
-speaker:
-  - platform: i2s_audio
-    id: i2s_audio_speaker
-    i2s_audio_id: i2s_output
-    i2s_dout_pin: ${i2s_dout}
-    i2s_mode: secondary          # slave to the mic bus's clock
-    dac_type: external
-    audio_dac: es8311_dac
-    timeout: never
-    buffer_duration: 100ms
-
-  # Mixes the announcement and media pipelines into the one physical output.
-  # Mono: the board has a single speaker (mono ES8311 + NS4150B), so a second
-  # channel would just be discarded.
-  - platform: mixer
-    id: mixing_speaker
-    output_speaker: i2s_audio_speaker
-    num_channels: 1
-    source_speakers:
-      - id: announcement_mixing_input
-        timeout: never
-      - id: media_mixing_input
-        timeout: never
-
-  # The mixer needs both inputs at one sample rate; these resample if needed.
-  - platform: resampler
-    id: announcement_resampling_speaker
-    output_speaker: announcement_mixing_input
-  - platform: resampler
-    id: media_resampling_speaker
-    output_speaker: media_mixing_input
 
 media_player:
   - platform: speaker
@@ -388,13 +327,24 @@ media_player:
 
 micro_wake_word:
   id: mww
-  microphone: i2s_mics
+  microphone: ${mic_id}
   stop_after_detection: false
   models:
-    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
-      id: alexa
+    # ORDER MATTERS. micro_wake_word enables only the FIRST model by default
+    # (`default_enabled = i == 0` in its __init__.py); every later one ships
+    # disabled and is switchable from the "Wake word" select in HA, with the
+    # choice persisted to flash.
+    #
+    # A disabled model costs no heap at all: StreamingModel loads its tensor and
+    # variable arenas lazily on first inference and unload_model() deallocates
+    # both the moment it is disabled. It costs flash only (~56 KB here).
+    # Even enabled, the arenas go to PSRAM first - RAMAllocator's default flag
+    # is NONE, "external allocation, fall back to internal" - so wake word
+    # models are not what constrains internal RAM on the AFE path.
     - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_mycroft.json
       id: hey_mycroft
+    - model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/alexa.json
+      id: alexa
   vad:
     model: https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/vad.json
   on_wake_word_detected:
@@ -440,13 +390,13 @@ micro_wake_word:
 
 voice_assistant:
   id: va
-  microphone: i2s_mics
+  microphone: ${mic_id}
   media_player: external_media_player
   micro_wake_word: mww
   use_wake_word: false
   noise_suppression_level: 0
   auto_gain: 0 dbfs
-  volume_multiplier: 1
+  volume_multiplier: ${va_volume_multiplier}
   on_client_connected:
     - if:
         condition:
@@ -464,10 +414,12 @@ voice_assistant:
           - micro_wake_word.start:
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
-    # One-shot "ready" chime. It MUST run after micro_wake_word.start above: the
-    # speaker is a slave to the mic's I2S clock, so playing before the mic is
-    # capturing hangs the announcement (and then wake word stops working). The
-    # flag is set first so an HA reconnect can't replay it.
+    # One-shot "ready" chime. On the STOCK path it MUST run after
+    # micro_wake_word.start above: the speaker is a slave to the mic's I2S clock,
+    # so playing before the mic is capturing hangs the announcement (and then
+    # wake word stops working). The AFE path has no such constraint - one task
+    # owns both directions - so it sets boot_chime_delay to 0s. The flag is set
+    # first so an HA reconnect can't replay it.
     - if:
         condition:
           - lambda: 'return !id(boot_chime_done);'
@@ -475,7 +427,7 @@ voice_assistant:
           - switch.is_off: diag_disable_mic
         then:
           - lambda: id(boot_chime_done) = true;
-          - delay: 1s            # let the mic-master clock settle
+          - delay: ${boot_chime_delay}
           - script.execute:
               id: play_sound
               priority: true
@@ -1078,18 +1030,19 @@ select:
       - Very sensitive
     # Probability cutoffs are quantised uint8 (255 = 1.0); the comment on each
     # line is the floating point value. FAPH = false accepts per hour measured
-    # against the Dinner Party Corpus. Values apply to the models pinned above.
+    # against the Dinner Party Corpus. Applies to both models whether or not
+    # they are currently enabled - setting a cutoff does not load a model.
     on_value:
       - lambda: |-
           if (x == "Slightly sensitive") {
-            id(alexa).set_probability_cutoff(230);        // 0.90
             id(hey_mycroft).set_probability_cutoff(230);  // 0.97
+            id(alexa).set_probability_cutoff(230);        // 0.90
           } else if (x == "Moderately sensitive") {
-            id(alexa).set_probability_cutoff(191);        // 0.75
             id(hey_mycroft).set_probability_cutoff(191);  // 0.93
+            id(alexa).set_probability_cutoff(191);        // 0.75
           } else if (x == "Very sensitive") {
-            id(alexa).set_probability_cutoff(128);        // 0.50
             id(hey_mycroft).set_probability_cutoff(128);  // 0.88
+            id(alexa).set_probability_cutoff(128);        // 0.50
           }
 
   # Pick the ring animation for each voice-assistant phase, from HA, live.
@@ -1189,7 +1142,7 @@ switch:
           then:
             - micro_wake_word.stop:
             - voice_assistant.stop:
-            - microphone.stop_capture: i2s_mics
+            - microphone.stop_capture: ${mic_id}
     on_turn_off:
       - if:
           condition:
@@ -1231,11 +1184,11 @@ switch:
     # word handler ignored it.
     turn_on_action:
       - lambda: id(mic_is_muted) = true;
-      - microphone.mute: i2s_mics
+      - microphone.mute: ${mic_id}
       - script.execute: flash_ring
     turn_off_action:
       - lambda: id(mic_is_muted) = false;
-      - microphone.unmute: i2s_mics
+      - microphone.unmute: ${mic_id}
       - script.execute: flash_ring
 
   - platform: template
@@ -1295,25 +1248,6 @@ switch:
       - script.execute: control_leds
 
 number:
-  - platform: template
-    id: mic_gain_db
-    name: "Mic gain (ES7210)"
-    icon: mdi:microphone-settings
-    entity_category: config
-    unit_of_measurement: dB
-    min_value: 0
-    max_value: 37.5           # ES7210 hardware ceiling - the driver clamps above this
-    step: 1.5
-    restore_value: true
-    initial_value: 24
-    mode: slider
-    set_action:
-      - lambda: |-
-          id(adc_mic).set_mic_gain(x);
-      - logger.log:
-          format: "[MIC] ES7210 gain -> %.1f dB"
-          args: ["x"]
-
   - platform: template
     id: led_ring_brightness
     name: "LED Ring Brightness"

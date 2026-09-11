@@ -1,0 +1,135 @@
+# =============================================================================
+# Waveshare ESP32-S3-AUDIO-Board voice assistant - AFE audio path (OPT-IN).
+#
+# Same device as waveshare-va.yaml, with the audio hardware layer swapped from
+# stock ESPHome i2s_audio to esphome-audio-stack + the Espressif AFE. Use this
+# one if you want the wake word to keep working while music or TTS is playing.
+#
+#   esphome run waveshare-va-afe.yaml
+#
+# What you gain:
+#   - Acoustic echo cancellation against the ES7210's hardware playback
+#     reference slot, so the mic stops hearing the device's own speaker.
+#   - Dual-mic Speech Enhancement/BSS and noise suppression.
+#   - Barge-in: "hey mycroft" during a TTS reply or over music actually lands.
+#
+# What it costs:
+#   - More flash and PSRAM, and a much longer first build: the IDF component
+#     manager fetches esp-sr and esp-gmf.
+#   - A different mic-gain entity (digital, post-AFE) and a new Master Volume,
+#     see the notes in the substitutions below.
+#   - Only the stock path has been confirmed on hardware in this repo. This one
+#     follows a reference config verified on this board by its author, but the
+#     TDM slot map is contested - see docs/HARDWARE.md and the flip list below.
+#     Work through docs/AFE-BRINGUP.md before trusting this firmware.
+#
+# Everything that is not audio - the LED ring, timers, alarm, buttons,
+# wake-word sensitivity, entity names and ids - is shared with the stock path,
+# so switching does not recreate your Home Assistant entities.
+# =============================================================================
+
+substitutions:
+  name: waveshare-va
+  friendly_name: "Waveshare Voice"
+
+  # Clock timezone, POSIX form (the device has no IANA database). Copy yours from
+  # https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv - DST is
+  # then handled automatically.
+  posix_timezone: "CET-1CEST,M3.5.0,M10.5.0/3"   # Europe/Warsaw
+
+  # Set to 'true' only if your SSID is hidden.
+  hidden_ssid: 'false'
+
+  # ---------------------------------------------------------------------------
+  # REQUIRED by the AFE path. core.yaml defaults these to the stock path's
+  # values, and a package cannot reliably override another package's
+  # substitutions - so they have to be set here, in your own config.
+  # ---------------------------------------------------------------------------
+
+  # The microphone id base/audio-afe.yaml declares and core.yaml consumes.
+  mic_id: mic_main
+
+  # INFO, not DEBUG. esphome-audio-stack is explicit about this: per-frame
+  # logging on the audio core can itself glitch the audio. Raise it to DEBUG
+  # only while chasing something.
+  log_level: INFO
+
+  # The stock path delays the boot chime so the mic (I2S master) is clocking
+  # before the slaved speaker plays. The audio stack owns both directions on one
+  # task, so that constraint is gone.
+  boot_chime_delay: 0s
+
+  # The AFE hands Assist a quieter stream than the raw mic did (AGC is off).
+  va_volume_multiplier: '2.0'
+
+  # NOTE: the media player is clamped here AND loudness is shaped by the codec
+  # curve (master_volume_min_db, -30 dB) via the "Master Volume" entity, so the
+  # signal is scaled in two places. If the bottom of the range feels dead or
+  # everything stays quiet until near the top, open these to 0.0/1.0 and let
+  # Master Volume do the shaping on its own.
+  volume_min: '0.2'
+  volume_max: '0.6'
+
+  # ---------------------------------------------------------------------------
+  # FLIP THESE FIRST if the AFE misbehaves on your board. The full conflict, and
+  # what each competing source claims, is documented at the top of
+  # base/audio-afe.yaml and in docs/HARDWARE.md.
+  #
+  # Bring-up procedure: the firmware exposes four "TDM slot N level" diagnostic
+  # sensors. Play music and watch which slot moves - that is the reference slot.
+  # Speak and watch which two move - those are the mic slots.
+  #
+  # The symptom of a wrong reference slot is this in the log:
+  #   [W][audio_stack] TDM AEC reference silent for 100 frames while speaker
+  #   active (ref -72.4 dBFS); check tdm_ref_slot wiring or set
+  #   use_tdm_reference: false
+  # ---------------------------------------------------------------------------
+  # tdm_mic_slot_a: '0'       # default: right microphone
+  # tdm_mic_slot_b: '2'       # default: left microphone
+  # tdm_ref_slot: '1'         # default: playback (DAC) reference
+  # tdm_total_slots: '4'
+
+  # If capture is garbage rather than merely misrouted, try 32/32 here: the
+  # audio-stack README's generic TDM examples use it, the board reference
+  # config does not.
+  # tdm_bits_per_sample: '16'
+  # tdm_slot_bit_width: auto
+
+  # If the AEC reference clips instead of being silent, trim it here rather than
+  # dropping es7210_gain_db and starving the mics.
+  # es7210_gain_db: '24.0'
+
+  # Loudness floor for the ES8311/NS4150 path. Less negative = less range but
+  # more usable low end.
+  # master_volume_min_db: '-30.0'
+
+  # AFE profile. The default `fd` is what was qualified on this board, but that
+  # reference device is a VA *and* a SIP intercom. For a voice-assistant-only
+  # build, `sr` uses a linear AEC that preserves the spectrum micro_wake_word was
+  # trained on, and is documented as the right default for assistant devices.
+  # If wake word under playback underperforms, try this FIRST.
+  # afe_type: sr              # sr | vc | fd   (default: fd)
+  # afe_mode: high_perf       # low_cost | high_perf. Default is low_cost:
+                              # high_perf starves the HA API on this board.
+                              # Stronger AEC, but verify the API stays connected.
+
+  # Home Assistant keeps `config`/`diagnostic` entities off the auto-generated
+  # Overview dashboard (they live on the device page instead). The TDM slot
+  # sensors ship uncategorised so they are visible while you settle the slot
+  # map; set this to `diagnostic` afterwards to tidy them away.
+  # slot_sensor_category: diagnostic
+
+  # Amp stays powered this long after playback stops. Shorter saves a little
+  # power; too short and back-to-back sounds click.
+  # amp_idle_delay: 30s
+
+packages:
+  core:
+    url: https://github.com/npnicholson/esphome-waveshare-esp32-s3-audio-va
+    ref: main
+    files:
+      - base/core.yaml
+      - base/audio-afe.yaml
+    refresh: 0s
+
+# Wi-Fi and the API key come from your local secrets.yaml.
