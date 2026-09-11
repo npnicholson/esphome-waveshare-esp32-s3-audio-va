@@ -4,9 +4,10 @@ description: >
   Reference for building/editing ESPHome configs on the Waveshare
   ESP32-S3-AUDIO-Board (ESP32-S3R8 smart-speaker devkit: ES8311 codec + NS4150B amp,
   ES7210 dual-mic ADC, TCA9555 I/O expander, 7x WS2812 ring, PCF85063 RTC, DVP camera
-  and SPI LCD connectors). Use whenever working on this board (or the base/core.yaml in
-  this repo): correct pinout, why the DAC must be forced I2S master, the mute/gain
-  traps, the EXIO map, strapping pins, and which "official" sources are wrong.
+  and SPI LCD connectors). Use whenever working on this board (or the base/*.yaml in
+  this repo): correct pinout, the two audio paths (stock two-bus i2s_audio vs the
+  opt-in esp_audio_stack/esp_afe TDM path) and the contested TDM slot map, the
+  mute/gain traps, the EXIO map, strapping pins, and which "official" sources are wrong.
 ---
 
 # Waveshare ESP32-S3-AUDIO-Board: ESPHome working notes
@@ -21,7 +22,8 @@ Full detail and citations: `docs/HARDWARE.md` in this repo.
 
 - **ESP32-S3R8** (bare chip), 240 MHz, **8 MB octal PSRAM**, **16 MB flash**.
 - **ES8311** mono codec (DAC) into **NS4150B** Class-D amp into speaker (JST header).
-- **ES7210** 4-ch ADC with **2 physical mics** (CH1/CH2). CH3 = AEC loopback.
+- **ES7210** 4-ch ADC with **2 physical mics** (CH1/CH2). CH3 = AEC loopback per
+  the schematic, but the **TDM slot** it lands on is contested - see the AFE section.
 - **TCA9555** I/O expander @ 0x20: amp enable + 3 buttons (+ LCD/cam/SD lines).
 - **7x WS2812B** ring on GPIO38, driven directly over RMT, **not** via expander.
 - **PCF85063** RTC @ 0x51. DVP camera + SPI/QSPI LCD connectors. USB-C. Li-ion header.
@@ -134,13 +136,14 @@ word. The ESP-mastered two-bus layout needs no patched component.
   (`cv.ensure_list(cv.int_range(0, 7))`, default `0`), not a count. This firmware
   just passes the mic directly (`microphone: i2s_mics`) and lets it default, so
   the wrapper isn't used - simplest, and Assist won't take a stereo source anyway.
-- **Hardware AEC is not reachable from stock ESPHome here.** The demo packs
-  4x16-bit ADC channels into 2x32-bit I2S slots and unpacks in software; ESPHome
-  doesn't. Use `noise_suppression_level` / `auto_gain` instead. Practical fallout:
-  the mic hears the device's own speaker loudly, so a "stop" wake word to
-  interrupt a reply does not work on this board (detected too weakly and late).
-  (The demo's declared slot order `"RMNM"` also doesn't reconcile with the
-  schematic wiring - unresolved.)
+- **Hardware AEC is not reachable from *stock* ESPHome here.** The demo packs
+  4x16-bit ADC channels into 2x32-bit I2S slots and unpacks in software;
+  `i2s_audio` doesn't. On the stock path use `noise_suppression_level` /
+  `auto_gain` and accept the fallout: the mic hears the device's own speaker
+  loudly, so a "stop" wake word to interrupt a reply does not work (detected too
+  weakly and late). **It IS reachable via `esp_audio_stack` + `esp_afe`**
+  (esphome-audio-stack), which is what `base/audio-afe.yaml` does - see the AFE
+  section below.
 - **Cold-boot: mic + LEDs sometimes don't come up until a reset.** Reported on
   the HA forum in **a single post with zero replies, with no published root cause
   or fix.** The TCA9555 direction registers defaulting to `0xFF` (all inputs)
@@ -173,6 +176,104 @@ word. The ESP-mastered two-bus layout needs no patched component.
 - **Battery monitoring is effectively unavailable**: the divider needs a 0 Ω
   resistor soldered (depopulated by default) and **enabling it kills the camera**.
   Ratio 3.0. Pin is GPIO1 per schematic, not GPIO8, which is stale demo code.
+
+## The opt-in AFE path (esp_audio_stack + esp_afe)
+
+`base/audio-afe.yaml` replaces the whole hardware layer - `i2s_audio`, `es7210`,
+`es8311` and the hardware speaker sink all go away - with one `esp_audio_stack`
+that owns a single 48 kHz TDM bus, drives both codecs through `esp_codec_dev`,
+converts only the mic/reference path down to 16 kHz, and feeds `esp_afe`. The
+stock path stays the default in `base/audio-stock.yaml`. `base/core.yaml` is
+shared and holds no audio hardware at all.
+
+Gotchas specific to that path:
+
+- **The TDM slot map is contested, and four sources give three answers.** The
+  schematic says MIC3 is the AEC loopback (ref on slot 2); the Waveshare demo
+  declares `"RMNM"` (ref on slot 0); esphome-audio-stack's own bring-up table
+  files this board under the Korvo-2 baseline (`tdm_ref_slot: 2`); and
+  esphome-intercom's config *for this exact board* says slot 0 = right mic,
+  slot 2 = left mic, **slot 1 = playback reference**. Note the last two are the
+  same author contradicting himself. **The last one is correct** - confirmed on
+  hardware in this repo with the `TDM slot N level` sensors, so the schematic
+  reading and the Korvo-2 baseline table are both wrong for this board.
+  Two tells when checking a board: the two mic slots track each other within
+  about a decibel under speech, and the reference slot has a *lower* idle noise
+  floor than either mic (an electrical DAC tap has no capsule self-noise).
+  Discriminate with **speech and playback stopped** - during playback the mics
+  hear the speaker too, so every slot rises and the test proves nothing.
+- **`mic_selected: 0x0F` is mandatory.** The ES7210 otherwise leaves ADC3/ADC4
+  clocked off and the reference slot reads zeros. In `esp_audio_stack` this is
+  `codec.input.mic_selected`, which reaches the `esp_codec_dev` ES7210 driver; it
+  replaces the raw register pokes older configs did by hand.
+- **The `TDM AEC reference silent` warning does not exist in the shipped
+  component.** Its README documents it, but the code is behind
+  `USE_ESP_AUDIO_STACK_TDM_REF_DIAGNOSTIC`, which nothing ever defines and which
+  has no YAML option - verify with
+  `grep -rn TDM_REF_DIAGNOSTIC` and by checking the build's `defines.h`. So a
+  wrong `tdm_ref_slot` is **completely silent**, whether the slot is dead or
+  pointed at a live microphone. The `TDM slot N level` sensors on the
+  `esp_audio_stack` sensor platform are the only working instrument; read them
+  as a delta under stimulus, never at idle.
+- **`codec.input.gain_db` hits the reference slot too.** The analog PGA applies
+  to every selected channel, so cranking it to help the mics also amplifies the
+  loopback. Trim the reference separately with `ref_channel` / `ref_gain_db`
+  rather than lowering the shared gain.
+- **The mic-gain entity changes meaning.** Stock exposes the ES7210's analog PGA
+  (0 to 37.5 dB) via `es7210.set_mic_gain()`. On the AFE path the analog gain is
+  compile-time and the runtime `mic_gain` number is *digital trim after the AFE*
+  (-20 to +30 dB). Don't present them as the same control.
+- **Don't clamp volume twice.** The AFE path shapes loudness with
+  `master_volume_min_db` (-30 dB suits this board's ES8311/NS4150; the
+  `esp_codec_dev` default near -50 dB drops away far too fast) plus a
+  `master_volume` number. The media player's own `volume_min`/`volume_max` then
+  have to be opened to 0.0/1.0, or the signal is scaled in both places.
+- **The amp must now be powered down when idle.** The stock path can leave PA_EN
+  on forever because its i2s speaker has `timeout: never` and holds the line at
+  clean silence. `esp_audio_stack` tears the speaker path down, so an amp left
+  enabled amplifies an undriven DAC line as hiss. Use
+  `on_amplifier_required` / `on_amplifier_idle` with a restartable delay long
+  enough to cover back-to-back sounds (30 s), not an immediate turn-off, or every
+  sound clicks.
+- **Keep the hardware sink's `buffer_duration` short** (128 ms, not the 500 ms
+  default). The ESPHome mixer pushes 50 ms chunks every 25 ms; a long backlog at
+  the sink delays backpressure reaching the media/TTS decoders.
+- **`logger: level: DEBUG` can itself glitch the audio.** Per-frame logging on
+  the audio core is enough to cause dropouts; run the AFE path at INFO.
+- **AFE feed and fetch tasks must be pinned to different cores** - the validator
+  enforces it, and Espressif's own GMF guidance is that sharing a core invites an
+  AFE task watchdog. The qualified layout on this board is audio stack on core 1
+  at priority 19, feed on core 0, fetch on core 1.
+- **AGC off, SE/NS not runtime-switchable on dual mic.** `se_enabled` is
+  structural: turning it off makes esp-sr fall back to first-mic-only. NS isn't
+  worth exposing either, because `afe_config_check()` prioritises SE/BSS over NS
+  for two-channel input. AGC can help wake word under playback but causes
+  TTS/media stutter on this board and needs a full AFE rebuild to toggle.
+- **YAML mechanics that cost time here:** a substitution cannot carry a list, so
+  `tdm_mic_slots` needs one substitution per slot; and `[${a}, ${b}]` is a YAML
+  parse error because `${` opens a flow mapping inside a flow sequence - use the
+  block sequence form.
+- **`esphome: min_version:` can NEVER be a substitution in a file loaded as a
+  remote package.** The package loader reads `esphome.min_version` straight off
+  the raw YAML and runs `cv.Version.parse` on it *before* the substitution pass
+  (`esphome/components/packages/__init__.py`, the `_load_package_yaml` helper),
+  so `min_version: ${foo}` dies with
+  `ValueError: Not a valid version number ${foo}`. Put a literal in whichever
+  package file actually needs the floor - here `base/audio-stock.yaml` declares
+  2025.8.0 and `base/audio-afe.yaml` declares 2026.6.5, and the `esphome:` blocks
+  merge. **This is also a testing trap:** local `packages: {x: !include f.yaml}`
+  does not go through that loader, so a `${...}` min_version validates fine
+  locally and only fails once the file is pulled by `url:`/`ref:`. Validate
+  package changes through a real remote package - a `file://` URL pointing at a
+  local git clone is enough.
+- **No forks needed.** esphome-intercom's reference config pulls forked
+  `speaker`, `voice_assistant`, `ota` and `audio_http`, but their own
+  `UPSTREAM.md` files show the patches are additive opt-ins that preserve
+  upstream defaults (`pause_releases_pipeline`, `tts_playback_start_timeout`) or
+  serve VoIP/simulator needs. Upstream ESPHome components work. In particular
+  `ESPAudioStackMicrophone` derives from `microphone::Microphone` and honours
+  `mute_state_` by zero-filling, so `microphone.mute` behaves exactly as on the
+  stock path.
 
 ## Validating without flashing
 

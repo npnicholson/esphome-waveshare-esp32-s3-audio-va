@@ -1,0 +1,134 @@
+###############################################################################
+# Waveshare ESP32-S3-AUDIO-Board - STOCK audio path (default)
+#
+# The audio hardware layer built entirely from stock ESPHome components:
+# two i2s_audio buses over the shared BCLK/LRCLK pins, es7210 + es8311, the
+# mixer/resampler speaker chain, and the ES7210 mic-gain entity.
+#
+# This is the default path. `base/audio-afe.yaml` is the opt-in alternative
+# (Espressif AFE with echo cancellation); exactly one of the two must be
+# included alongside `base/core.yaml`.
+#
+# Contract with core.yaml - this file must provide:
+#   microphone  id  i2s_mics                        (= ${mic_id})
+#   speaker     id  announcement_resampling_speaker (media_player announcements)
+#   speaker     id  media_resampling_speaker        (media_player media)
+#   speaker     id  media_mixing_input              (apply_ducking target)
+#
+# No echo cancellation: the mic hears the speaker, so wake word does not work
+# reliably while music or TTS is playing. See base/audio-afe.yaml for that.
+###############################################################################
+
+# Stock path floor. This must be a literal: the remote-package loader checks
+# esphome.min_version before substitutions are applied.
+esphome:
+  min_version: 2025.8.0
+
+# The DAC and ADC share BCLK/LRCLK pins, but ESPHome's i2s_audio cannot run one
+# bus full-duplex (the mic and speaker each call i2s_new_channel on the port, and
+# the second fails with "Parent bus is busy"). So we use TWO buses (two I2S ports)
+# over the shared pins:
+#   - i2s_input  = the MIC bus, I2S MASTER. The mic is always capturing (wake
+#     word), so it drives BCLK/LRCLK/MCLK continuously. Using the ESP as master
+#     is what makes the mic get a correct-rate stream (a codec-mastered clock via
+#     force_master gave the mic garbage and killed wake word).
+#   - i2s_output = the SPEAKER bus, I2S SLAVE. It reads the mic's clock and only
+#     needs to output data, so it never contends for a port of its own.
+# The ES8311 (DAC) and ES7210 (ADC) are stock and slave to the mic's clock; no
+# patched es8311 / force_master is needed.
+i2s_audio:
+  - id: i2s_input
+    i2s_mclk_pin: ${i2s_mclk}
+    i2s_bclk_pin:
+      number: ${i2s_bclk}
+      allow_other_uses: true
+    i2s_lrclk_pin:
+      number: ${i2s_lrclk}
+      allow_other_uses: true
+  - id: i2s_output
+    i2s_bclk_pin:
+      number: ${i2s_bclk}
+      allow_other_uses: true
+    i2s_lrclk_pin:
+      number: ${i2s_lrclk}
+      allow_other_uses: true
+
+audio_adc:
+  - platform: es7210
+    id: adc_mic
+    i2c_id: internal_i2c
+    # Runtime gain lives on the `mic_gain_db` number below. The ES7210 caps at
+    # 37.5 dB; higher values are silently clamped by the driver.
+    mic_gain: 24db
+
+audio_dac:
+  - platform: es8311
+    id: es8311_dac
+    i2c_id: internal_i2c
+
+microphone:
+  - platform: i2s_audio
+    id: i2s_mics
+    i2s_audio_id: i2s_input
+    i2s_din_pin: ${i2s_din}
+    adc_type: external
+    pdm: false
+    # default i2s_mode: primary -> this bus masters the shared clock.
+    # 16-bit on purpose: as master the mic defines the frame's slot width, and
+    # the i2s_audio default is 32-bit. The ES8311/speaker are 16-bit, so a
+    # 32-bit frame doubles the bit clock they expect and playback comes out as
+    # noise. Matching 16-bit aligns the whole bus (the ES7210 is 16-bit too).
+    bits_per_sample: 16bit
+
+speaker:
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    i2s_audio_id: i2s_output
+    i2s_dout_pin: ${i2s_dout}
+    i2s_mode: secondary          # slave to the mic bus's clock
+    dac_type: external
+    audio_dac: es8311_dac
+    timeout: never
+    buffer_duration: 100ms
+
+  # Mixes the announcement and media pipelines into the one physical output.
+  # Mono: the board has a single speaker (mono ES8311 + NS4150B), so a second
+  # channel would just be discarded.
+  - platform: mixer
+    id: mixing_speaker
+    output_speaker: i2s_audio_speaker
+    num_channels: 1
+    source_speakers:
+      - id: announcement_mixing_input
+        timeout: never
+      - id: media_mixing_input
+        timeout: never
+
+  # The mixer needs both inputs at one sample rate; these resample if needed.
+  - platform: resampler
+    id: announcement_resampling_speaker
+    output_speaker: announcement_mixing_input
+  - platform: resampler
+    id: media_resampling_speaker
+    output_speaker: media_mixing_input
+
+# Runtime mic gain: the analog PGA inside the ES7210.
+number:
+  - platform: template
+    id: mic_gain_db
+    name: "Mic gain (ES7210)"
+    icon: mdi:microphone-settings
+    entity_category: config
+    unit_of_measurement: dB
+    min_value: 0
+    max_value: 37.5           # ES7210 hardware ceiling - the driver clamps above this
+    step: 1.5
+    restore_value: true
+    initial_value: 24
+    mode: slider
+    set_action:
+      - lambda: |-
+          id(adc_mic).set_mic_gain(x);
+      - logger.log:
+          format: "[MIC] ES7210 gain -> %.1f dB"
+          args: ["x"]

@@ -1,5 +1,109 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Opt-in Espressif AFE audio path** (`base/audio-afe.yaml`, flashed via the new
+  `waveshare-va-afe.yaml` thin config), built on
+  [esphome-audio-stack](https://github.com/n-IA-hane/esphome-audio-stack)
+  `esp_audio_stack` + `esp_afe`, pinned to `v2026.9.1`. One I2S port in 4-slot
+  TDM at 48 kHz replaces the two-bus layout; `esp_codec_dev` drives the ES7210
+  and ES8311; the two mics and the ES8311's playback reference are captured as
+  slots of the same frame, converted to 16 kHz, and run through AEC plus dual-mic
+  Speech Enhancement/BSS, noise suppression and VAD. micro_wake_word and
+  voice_assistant consume the processed stream, **so the wake word keeps working
+  while music or TTS is playing** - the barge-in that the stock path cannot do.
+  No forked ESPHome components are used. Requires ESPHome 2026.6.5+.
+  **Not yet confirmed on hardware.**
+- **New entities on the AFE path only**: `Master Volume`, `Echo Cancellation`,
+  `Voice Activity Detector`, `Voice Detected`, and four `TDM slot N level`
+  diagnostic sensors for resolving the slot map on a real board.
+
+### Changed
+- **The TDM slot map is confirmed on hardware**: slot 0 and slot 2 are the
+  microphones, **slot 1 is the playback reference**, slot 3 is unused. This
+  matches the esphome-intercom reference config and contradicts the schematic
+  reading, the Waveshare demo's `"RMNM"` and esphome-audio-stack's own Korvo-2
+  baseline table, all of which put the reference elsewhere. `docs/HARDWARE.md`
+  records the measurements.
+- **Post-AFE mic gain defaults to 15 dB on first boot.** The component's
+  `mic_gain` number has no `initial_value` in its schema (it restores from flash
+  or sits at 0 dB), so `base/audio-afe.yaml` applies `mic_gain_default` once from
+  `on_boot`, guarded by a restored global; a value set later in HA persists and
+  is never overridden.
+- **`hey_mycroft` is now the default wake word; `alexa` ships disabled.**
+  micro_wake_word enables only the first model in the list, so `alexa` is now
+  second: present and selectable from the "Wake word" entity in Home Assistant
+  (persisted across reboots), but holding no memory until you enable it. A
+  disabled model's tensor arenas are deallocated by `unload_model()` and
+  reloaded lazily, so the cost while off is flash only. **This affects both
+  audio paths.**
+- **Media player volume clamps default to `0.2` / `0.6`** (were `0.4` / `0.8`).
+  On the AFE path this means the signal is scaled both by the media player and
+  by the codec curve (`master_volume_min_db`); open the clamps to `0.0`/`1.0` if
+  the bottom of the range feels dead.
+- **`min_version` moved from `base/core.yaml` into the audio path packages**
+  (2025.8.0 in `base/audio-stock.yaml`, 2026.6.5 in `base/audio-afe.yaml`). It
+  cannot be a substitution: the remote-package loader parses
+  `esphome.min_version` off the raw YAML and version-parses it before
+  substitutions are applied, so `${...}` there fails with `Not a valid version
+  number`. Local `!include` packages skip that loader, which is why it only
+  shows up once the file is fetched by `url:`/`ref:`.
+- **`base/core.yaml` no longer contains any audio hardware.** It was split so the
+  two paths can share one LED state machine, timer/alarm engine, button set and
+  entity list - switching paths does not recreate Home Assistant entities. The
+  stock hardware layer moved verbatim into `base/audio-stock.yaml`, and thin
+  configs now list both files in `packages:`. The resolved stock configuration is
+  unchanged: `esphome config` output differs only by five new substitution
+  declarations and the order of the `number:` block.
+- **`scripts/validate.py` also reports duplicate top-level keys.** PyYAML keeps
+  only one of them, so a second `esphome:` block in a file silently discards
+  everything in the losing copy with no error anywhere - it just goes missing
+  from the compiled config.
+- **`scripts/validate.py` accepts comma-separated file groups**, validating
+  `core.yaml` plus one audio package as one merged config, since neither half
+  resolves standalone any more.
+- **The AFE path renames the mic-gain entity to `Mic gain (digital)`.** Stock's
+  `Mic gain (ES7210)` is the ES7210's analog PGA (0 to 37.5 dB); on the AFE path
+  that gain is compile-time (it also feeds the echo reference, so it is not safe
+  as a live control) and the runtime entity is digital trim after the AFE
+  (-20 to +30 dB). The stock entity is untouched.
+- **The AFE path shapes loudness with the codec curve** (`master_volume_min_db`
+  at -30 dB, since `esp_codec_dev`'s ~-50 dB default drops away far too fast on
+  this board's ES8311/NS4150 path) and opens the media player's
+  `volume_min`/`volume_max` to 0.0/1.0, so the signal is not scaled twice.
+- **The AFE path powers the amplifier down 30 s after playback stops.** The stock
+  path can leave PA_EN on forever because its i2s speaker holds the line at clean
+  silence (`timeout: never`); `esp_audio_stack` tears the speaker path down, so a
+  still-enabled amp would amplify an undriven DAC line as hiss.
+- **The AFE path defaults to `logger: level: INFO`**, because per-frame logging on
+  the audio core is itself enough to glitch the audio.
+- **The boot chime's ordering constraint is now a substitution**
+  (`boot_chime_delay`, 1 s on stock, 0 s on AFE). It existed only because the
+  stock speaker is slaved to the mic's I2S clock.
+
+### Documentation
+- **`docs/HARDWARE.md`**: the ES7210 TDM slot map now has its own section. Four
+  sources give three different answers - the schematic read (ref on slot 2),
+  Waveshare's demo `"RMNM"` (slot 0), esphome-audio-stack's Korvo-2 baseline
+  table (slot 2) and esphome-intercom's measured map for this exact board
+  (slot 1, mics on 0 and 2), the last two being the same author contradicting
+  himself. The firmware defaults to the measured map and ships slot-level sensors
+  to settle it per board. The "hardware AEC is not usable here" claim is now
+  scoped to the stock path, which is all it was ever true of.
+- **`README.md`**: an Audio paths section comparing the two, how to opt in, and
+  what changes.
+- **`docs/AFE-BRINGUP.md`** (new): the hardware checklist for the AFE path -
+  confirming the slot map with the level sensors first, then wake word over
+  music, barge-in, STT comparison, mute, amp/chime behaviour, volume range and
+  heap headroom - plus a symptom-to-substitution table.
+- **`skill/waveshare-esp32-s3-audio/SKILL.md`**: an AFE section with the gotchas
+  found building it - `mic_selected: 0x0F` or the reference slot reads zeros; a
+  silent reference warns but a wrong-but-live one does not; `gain_db` amplifies
+  the reference too; feed and fetch tasks must be on different cores; and the two
+  YAML traps (a substitution cannot hold a list, and `[${a}, ${b}]` is a parse
+  error because `${` opens a flow mapping).
+
 ## [1.0.0] - 2026-07-18
 
 First stable release. The full voice assistant is confirmed on hardware, the

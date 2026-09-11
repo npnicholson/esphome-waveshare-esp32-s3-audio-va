@@ -146,17 +146,85 @@ alone keeps USB flashing alive.
 Corroboration: `MICBIAS12` biases **only** channels 1 and 2, i.e. only those two
 have actual capsules.
 
-> **Unresolved:** the demo declares its AFE input format as `"RMNM"`
-> (slot0 = reference, slot1 = mic, slot2 = null, slot3 = mic), which does not
-> reconcile with a naive MIC1 to slot0 mapping. Possibly ES7210 slot packing
-> isn't 1:1, possibly copy-paste from a Korvo BSP. Verify before relying on it.
+### ⚠️ TDM slot map: four sources, three answers
 
-**Hardware AEC is not usable from stock ESPHome on this board.** The demo packs
-4x16-bit channels into 2x32-bit I2S slots and unpacks them in software; ESPHome
-does not. This firmware takes a single mic channel and relies on ESPHome's
-software `noise_suppression_level` / `auto_gain` instead. The practical fallout:
+The ES7210 delivers its four channels as TDM slots, and **which slot carries
+what is genuinely contested.** This matters only on the AFE audio path
+(`base/audio-afe.yaml`), which reads the mics and the playback reference out of
+named slots; the stock path takes one channel and never looks.
+
+| Source | Reference slot | Mic slots |
+|---|---|---|
+| **This document's schematic read** (MIC3 = AEC loopback, MICBIAS12 biases only CH1/CH2) | 2 | 0, 1 |
+| **Waveshare demo**, declared AFE input format `"RMNM"` | 0 | 1, 3 |
+| **esphome-audio-stack** bring-up table, which lists this board under the Korvo-2 baseline | 2 | — |
+| **esphome-intercom's config for this exact board**, stated as verified on hardware (board oriented speaker-down, GPIO header up): slot 0 = right mic, slot 2 = left mic, slot 1 = playback reference, slot 3 near-silent | **1** | **0, 2** |
+
+Note that the third and fourth rows are the *same author's* projects
+contradicting each other about the same board.
+
+### ✅ Settled: the last row is right
+
+**Confirmed on hardware in this repo**, independently of that config, using the
+`TDM slot N level` sensors:
+
+| Slot | Idle | Under stimulus | Conclusion |
+|---|---|---|---|
+| 0 | ~-73 dBFS | rises with speech, tracks slot 2 | microphone |
+| 1 | ~-85 dBFS | rises with playback, not with speech alone | **playback reference** |
+| 2 | ~-74 dBFS | rises with speech, tracks slot 0 | microphone |
+| 3 | ~-89 dBFS | never moves | unused |
+
+Two details worth keeping: slots 0 and 2 track each other within about a
+decibel under speech, which is what a matched capsule pair looks like; and slot
+1 has a **lower idle noise floor** than either mic, because it is an electrical
+tap off a silent DAC rather than a capsule with self-noise. That noise-floor
+difference is a useful tell on any board.
+
+So the schematic reading (ref on slot 2), the Waveshare demo's `"RMNM"` (ref on
+slot 0) and esphome-audio-stack's own Korvo-2 baseline table (ref on slot 2)
+are all **wrong for this board**. `MIC3 = AEC loopback` may still be true of the
+ES7210 pin; it simply does not land on TDM slot 2.
+
+The values remain substitutions (`tdm_mic_slot_a`, `tdm_mic_slot_b`,
+`tdm_ref_slot`) in case a board revision differs.
+
+**How to settle it on your own board.** The AFE path publishes four
+`TDM slot N level` diagnostic sensors. Play music: the slot that moves is the
+playback reference. Speak: the two slots that move are the mics. A wrong
+reference slot also announces itself in the log:
+
+```text
+[W][audio_stack] TDM AEC reference silent for 100 frames while speaker active
+(ref -72.4 dBFS); check tdm_ref_slot wiring or set use_tdm_reference: false
+```
+
+> ⚠️ **This warning is compiled out of the released component.**
+> It sits behind `USE_ESP_AUDIO_STACK_TDM_REF_DIAGNOSTIC`, which nothing in
+> `esp_audio_stack` ever defines - there is no YAML option for it. Its README
+> documents the warning, but you will never see it. **The `TDM slot N level`
+> sensors are the only working instrument for the slot map.**
+
+Trust the sensors, and read them as a *delta under stimulus* - at idle every slot
+sits at the noise floor (around -70 to -90 dBFS) and tells you nothing.
+
+### Hardware AEC and the two audio paths
+
+**Hardware AEC is not reachable from stock ESPHome on this board.** The demo
+packs 4x16-bit channels into 2x32-bit I2S slots and unpacks them in software;
+ESPHome's `i2s_audio` does not. The stock path (`base/audio-stock.yaml`,
+the default) therefore takes a single mic channel and relies on ESPHome's
+software `noise_suppression_level` / `auto_gain`. The practical fallout:
 without AEC the mic hears the device's own speaker loudly, so barge-in features
-(a "stop" wake word during a reply) don't work here.
+(a "stop" wake word during a reply) don't work there.
+
+The opt-in AFE path (`base/audio-afe.yaml`) does reach it, by handing the whole
+audio layer to `esp_audio_stack` + `esp_afe`: one TDM bus at 48 kHz,
+`esp_codec_dev` driving both codecs, the mics and the hardware reference slot
+captured in the same frame, and Espressif's AFE doing AEC plus dual-mic speech
+enhancement before the 16 kHz mono stream reaches micro_wake_word and Assist.
+`mic_selected: 0x0F` is what unlocks the other two ADC channels; without it the
+reference slot reads zeros.
 
 ## Not used by this firmware
 
@@ -212,7 +280,14 @@ The layout this firmware uses, all on stock ESPHome components:
 Making the **ES8311** the master instead (a `force_master`-style patch, setting
 the codec's MSC bit) also works, but it feeds the ESP mic a wrong-rate stream
 that kills the wake word. The ESP-mastered two-bus layout above needs no patch.
-See `base/core.yaml` for the annotated config.
+See `base/audio-stock.yaml` for the annotated config.
+
+**The AFE path sidesteps all of this.** `base/audio-afe.yaml` hands the bus to
+`esp_audio_stack`, which owns one I2S port full-duplex from a single pinned task
+instead of two ESPHome components racing for it - so the "Parent bus is busy"
+constraint, the master/slave split and the 16-bit frame-width trap simply do not
+apply there. It runs the bus at 48 kHz in TDM mode and converts the mic path to
+16 kHz in software.
 
 ### ⚠️ Cold-boot failure of the ES7210 / LEDs: no verified fix
 
@@ -286,7 +361,10 @@ Documented rather than guessed at:
 
 1. **Battery ADC pin**: GPIO1 (schematic) vs GPIO8 (demo).
 2. **EXIO6 vs EXIO7**: official sources contradict each other.
-3. **ES7210 slot order**: wiring (CH3 = ref) vs demo's `"RMNM"`.
+3. **ES7210 slot order**: schematic (CH3 = ref) vs demo's `"RMNM"` vs
+   esphome-audio-stack's Korvo-2 baseline (slot 2) vs esphome-intercom's
+   measured map for this board (slot 1). The AFE path defaults to the last
+   and ships slot-level sensors to settle it. See the microphone section.
 4. **EXIO4**: no known function.
 5. **RTC_INT**: net exists, terminus unknown.
 6. **RGB vs GRB**: verify with a pure-red test.
