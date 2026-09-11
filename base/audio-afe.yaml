@@ -126,10 +126,9 @@ substitutions:
   # the encrypted handshake cannot complete at all. Confirmed on hardware.
   #
   # The reference config gets away with high_perf on a device with a different
-  # entity set and network profile. Now that enable_high_performance is off and
-  # the Wi-Fi pools are trimmed below, high_perf may be worth retrying - it is
-  # the stronger AEC - but verify the API stays connected for several minutes
-  # before keeping it.
+  # entity set and network profile. Retested on this board AFTER
+  # enable_high_performance was turned off and the Wi-Fi pools trimmed:
+  # high_perf still fails. Do not change this without hardware in front of you.
   afe_mode: low_cost
 
   # Task layout, qualified under full load by the reference config. The audio

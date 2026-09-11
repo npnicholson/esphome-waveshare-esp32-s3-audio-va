@@ -1,9 +1,21 @@
 # AFE path: hardware bring-up checklist
 
 The AFE audio path (`base/audio-afe.yaml`, flashed via `waveshare-va-afe.yaml`)
-compiles clean and its topology is validated, but **it has not been run on
-hardware.** Work through this once before trusting it, and keep the stock path
-(`waveshare-va.yaml`) as the fallback - it is unchanged and still the default.
+is **confirmed working on hardware**: wake word over music, barge-in during a
+TTS reply, STT quality, the encrypted API and the TDM slot map have all been
+verified on a real board. The stock path (`waveshare-va.yaml`) remains the
+default and the fallback.
+
+Work through this checklist anyway on a new board or a new board revision - the
+slot map in particular is a per-board fact, and the shipped defaults are what
+one board measured, not a guarantee.
+
+Two results worth knowing before you start:
+
+- **`afe_mode: high_perf` does not work on this board**, retested after the
+  Wi-Fi and lwIP memory fixes. `low_cost` is the default for that reason.
+- **API encryption is fine** once the memory settings are right. Bring up with
+  it off only to reduce variables, then turn it back on.
 
 Stream logs with `scripts/esplog.py` rather than the dashboard; the interesting
 events are boot-time and easy to miss.

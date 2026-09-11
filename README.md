@@ -12,8 +12,10 @@ core you pull as a package, plus one thin config file you actually edit.
   <video src="https://github.com/user-attachments/assets/0eae0230-de47-4f20-a6ea-47f65af35f86" controls width="400"></video>
 </div>
 
-> **Status: stable (v1.0.0).** Wake word, STT/TTS, clean playback and the LED
-> ring are confirmed on-device. Full docs are in the
+> **Status: stable (v1.1.0).** Wake word, STT/TTS, clean playback and the LED
+> ring are confirmed on-device on both audio paths - including the opt-in
+> Espressif AFE path, where the wake word keeps working over music and during a
+> TTS reply. Full docs are in the
 > [Wiki](https://github.com/MichalZaniewicz/esphome-waveshare-esp32-s3-audio-va/wiki);
 > the release history is in [CHANGELOG.md](CHANGELOG.md).
 
@@ -76,10 +78,11 @@ You  ──▶  Waveshare ESP32-S3  ──▶  Home Assistant Assist
    assign an Assist pipeline.
 5. Say "Hey Mycroft". The ring should go violet.
 
-The example config pins the `v1.0.0` release tag, so a build is reproducible. To
-move to a newer release, bump `ref:` in the `packages:` block to a later tag (or
-`main` to track the latest), then `esphome clean waveshare-va.yaml` (clears the
-package cache) and `esphome run waveshare-va.yaml`.
+Both example configs pin the `v1.1.0` release tag (`ref:` in the `packages:`
+block), so a build is reproducible. To move to a newer release, bump `ref:` to a
+later tag - or set it to `main` to track the latest changes, accepting that they
+can move under you. After changing `ref:`, run `esphome clean waveshare-va.yaml`
+(clears the package cache) and then `esphome run waveshare-va.yaml`.
 
 ## Documentation
 
@@ -109,7 +112,7 @@ Pick one by choosing which thin config you flash.
 | Echo cancellation | none | AEC against the ES7210's hardware playback-reference slot |
 | Mics used | **one** channel (`channel: right`) | **both**, combined by Speech Enhancement/BSS into one clean stream |
 | Wake word over music/TTS | unreliable - the mic hears the speaker | works; this is the point |
-| Confirmed on hardware | yes, since v0.2.0 | not yet in this repo |
+| Confirmed on hardware | yes, since v0.2.0 | yes — wake word over music, barge-in during TTS, STT, encrypted API |
 | Extra cost | - | more flash and PSRAM, a long first build (esp-sr + esp-gmf are fetched), `esphome 2026.6.5+` |
 
 ### Stock: how the shared I2S bus is handled
@@ -170,10 +173,13 @@ Trade-offs and things that genuinely change:
 - **No forked components.** The upstream ESPHome `speaker`, `voice_assistant` and
   `ota` are used as-is.
 
-This path compiles clean but **has not been run on hardware yet**. Work through
-[docs/AFE-BRINGUP.md](docs/AFE-BRINGUP.md) before trusting it - it starts by
-confirming the TDM slot map, and ends with a table of every substitution to flip
-for each symptom.
+This path is **confirmed working on hardware**: the wake word lands over music
+and during a TTS reply, STT quality holds up, and the encrypted API is stable.
+The TDM slot map was verified with the on-device slot-level sensors.
+
+[docs/AFE-BRINGUP.md](docs/AFE-BRINGUP.md) is still the place to start on a new
+board - it walks the slot map first, then the tests that actually measure the
+feature, and ends with a table of every substitution to flip for each symptom.
 
 ## Repository layout
 

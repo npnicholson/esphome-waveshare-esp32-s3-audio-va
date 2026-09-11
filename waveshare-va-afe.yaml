@@ -18,10 +18,10 @@
 #     manager fetches esp-sr and esp-gmf.
 #   - A different mic-gain entity (digital, post-AFE) and a new Master Volume,
 #     see the notes in the substitutions below.
-#   - Only the stock path has been confirmed on hardware in this repo. This one
-#     follows a reference config verified on this board by its author, but the
-#     TDM slot map is contested - see docs/HARDWARE.md and the flip list below.
-#     Work through docs/AFE-BRINGUP.md before trusting this firmware.
+#   - Confirmed working on hardware: wake word over music, barge-in during a TTS
+#     reply, STT quality and the encrypted API. The TDM slot map below was
+#     verified with the on-device slot-level sensors. On a different board
+#     revision, re-verify it - see docs/AFE-BRINGUP.md.
 #
 # Everything that is not audio - the LED ring, timers, alarm, buttons,
 # wake-word sensitivity, entity names and ids - is shared with the stock path,
@@ -126,7 +126,7 @@ substitutions:
 packages:
   core:
     url: https://github.com/npnicholson/esphome-waveshare-esp32-s3-audio-va
-    ref: main
+    ref: v1.1.0
     files:
       - base/core.yaml
       - base/audio-afe.yaml

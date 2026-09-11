@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-09-11
+
+Adds an opt-in Espressif AFE audio path with echo cancellation, confirmed on
+hardware, alongside the unchanged stock path. The core config is split so both
+paths share one LED/timer/entity core and switching between them does not
+recreate Home Assistant entities.
 
 ### Added
 - **Opt-in Espressif AFE audio path** (`base/audio-afe.yaml`, flashed via the new
@@ -14,7 +19,8 @@
   voice_assistant consume the processed stream, **so the wake word keeps working
   while music or TTS is playing** - the barge-in that the stock path cannot do.
   No forked ESPHome components are used. Requires ESPHome 2026.6.5+.
-  **Not yet confirmed on hardware.**
+  **Confirmed on hardware**: wake word over music, barge-in during a TTS reply,
+  STT quality and the encrypted API all verified on a real board.
 - **New entities on the AFE path only**: `Master Volume`, `Echo Cancellation`,
   `Voice Activity Detector`, `Voice Detected`, and four `TDM slot N level`
   diagnostic sensors for resolving the slot map on a real board.

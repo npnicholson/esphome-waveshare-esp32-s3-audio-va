@@ -50,7 +50,7 @@ substitutions:
 packages:
   core:
     url: https://github.com/npnicholson/esphome-waveshare-esp32-s3-audio-va
-    ref: main
+    ref: v1.1.0
     files:
       - base/core.yaml
       - base/audio-stock.yaml
