@@ -1185,6 +1185,10 @@ switch:
     name: Amplifier
     icon: mdi:speaker
     entity_category: config
+    # Driven automatically (media_player on_state, and on_amplifier_required on
+    # the AFE path). Exposed for diagnostics, so it ships disabled - toggling it
+    # by hand mostly just fights the firmware.
+    disabled_by_default: true
     pin:
       tca9555: ioexp
       number: ${amp_ctrl}
@@ -1361,7 +1365,6 @@ button:
     id: restart_button
     name: "Restart"
     entity_category: config
-    disabled_by_default: true
     icon: "mdi:restart"
 
 binary_sensor:

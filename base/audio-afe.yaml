@@ -419,6 +419,7 @@ number:
       name: "Mic gain (digital)"
       icon: mdi:microphone-settings
       entity_category: config
+      disabled_by_default: true
       min_value: -20
       max_value: 30
     # The codec's own volume curve, floored at master_volume_min_db. The media
@@ -429,6 +430,7 @@ number:
       id: master_volume
       name: "Master Volume"
       speaker_id: hw_speaker
+      disabled_by_default: true
 
 switch:
   - platform: esp_afe
@@ -438,6 +440,7 @@ switch:
       name: "Echo Cancellation"
       icon: mdi:ear-hearing
       restore_mode: RESTORE_DEFAULT_ON
+      disabled_by_default: true
     vad:
       id: vad_switch
       name: "Voice Activity Detector"
@@ -445,6 +448,7 @@ switch:
       # GMF AFE only builds its VAD/wakeup internals if VAD is on when the
       # element opens, so keep it on across reboots and HA reconnects.
       restore_mode: ALWAYS_ON
+      disabled_by_default: true
 
 binary_sensor:
   - platform: esp_afe
@@ -468,12 +472,16 @@ sensor:
       - slot: 0
         name: "TDM slot 0 level"
         entity_category: ${slot_sensor_category}
+        disabled_by_default: true
       - slot: 1
         name: "TDM slot 1 level"
         entity_category: ${slot_sensor_category}
+        disabled_by_default: true
       - slot: 2
         name: "TDM slot 2 level"
         entity_category: ${slot_sensor_category}
+        disabled_by_default: true
       - slot: 3
         name: "TDM slot 3 level"
         entity_category: ${slot_sensor_category}
+        disabled_by_default: true
