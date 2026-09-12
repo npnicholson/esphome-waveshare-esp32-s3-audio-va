@@ -54,6 +54,11 @@ substitutions:
   i2c_scl: GPIO10
   led_pin: GPIO38
   led_num: '7'              # WS2812 ring
+  # Floor for the LED Ring Brightness slider. Not 0: the ring is 7 LEDs at 8-bit
+  # per channel, and below roughly a third the effect lambdas quantise visibly
+  # (the Comet effect carries an error-diffusion term for exactly this reason).
+  # To turn the ring OFF, use the "Status ring" switch rather than dimming it.
+  led_brightness_min: '0.4'
   # TCA9555 expander channels. Confirmed against Waveshare's own driver code
   # (Audio_ES8311.cpp drives EXIO8; Button_Driver.cpp reads EXIO9/10/11), which
   # is why the "schematic says the keys are on 12" folklore is ignored here.
@@ -740,7 +745,20 @@ globals:
 script:
   - id: flash_ring
     then:
-      - light.turn_on: { id: status_ring, red: 1.0, green: 0.0, blue: 0.0, brightness: 100%, effect: "None" }
+      # Paints directly rather than through control_leds, so it needs its own
+      # check of the enable switch.
+      - if:
+          condition:
+            switch.is_off: led_ring_enabled
+          then:
+            - script.stop: flash_ring
+      - light.turn_on:
+          id: status_ring
+          red: 1.0
+          green: 0.0
+          blue: 0.0
+          brightness: !lambda 'return id(led_ring_brightness).state;'
+          effect: "None"
       - delay: 250ms
       # Return to the real state instead of going dark (e.g. if a timer is
       # counting or the VA is active while the mic is muted/unmuted).
@@ -793,6 +811,12 @@ script:
     mode: single
     then:
       - lambda: |-
+          // Master off switch. Checked before anything else so no state change
+          // can light the ring back up while it is disabled.
+          if (!id(led_ring_enabled).state) {
+            id(led_set_effect).execute("off", 0, 0, 0);
+            return;
+          }
           const bool wifi_connected = id(wifi_id).is_connected();
           const bool api_connected  = id(api_id).is_connected();
           const bool ringing        = id(timer_ringing).state;
@@ -863,6 +887,11 @@ script:
   - id: control_leds_volume_changed
     mode: restart
     then:
+      - if:
+          condition:
+            switch.is_off: led_ring_enabled
+          then:
+            - script.stop: control_leds_volume_changed
       - light.turn_on:
           id: status_ring
           brightness: !lambda 'return id(led_ring_brightness).state;'
@@ -1192,6 +1221,33 @@ switch:
       - script.execute: flash_ring
 
   - platform: template
+    id: led_ring_enabled
+    name: "Status ring"
+    icon: mdi:led-strip-variant
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    # Turning the light entity itself off from HA does not stick: the next state
+    # change calls control_leds, which paints it again. This switch is what
+    # control_leds and the two direct painters actually respect.
+    #
+    # Like every template switch here, these triggers also fire during setup()
+    # while the state is restored - before the light/RMT exists - so they are
+    # gated on init_in_progress and on_boot applies the real state.
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - script.execute: control_leds
+    on_turn_off:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - light.turn_off: status_ring
+
+  - platform: template
     id: wake_sound
     name: Wake sound
     icon: "mdi:bullhorn"
@@ -1255,7 +1311,7 @@ number:
     entity_category: config
     optimistic: true
     restore_value: true
-    min_value: 0.4
+    min_value: ${led_brightness_min}
     max_value: 1.0
     step: 0.05
     initial_value: 0.8
