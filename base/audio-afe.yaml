@@ -200,6 +200,25 @@ esp32:
       CONFIG_ESP_WIFI_TX_BA_WIN: "16"
       CONFIG_ESP_WIFI_RX_BA_WIN: "16"
 
+      # Let plain malloc/new fall back to PSRAM. The psram component builds with
+      # SPIRAM_USE_CAPS_ALLOC, so every ordinary allocation is internal-only and
+      # a failed one aborts (no C++ exceptions). On this path that killed the
+      # device at wake word: Assist starting, the wake sound restarting the
+      # speaker chain and the first mic frame into voice_assistant all landed
+      # on an exhausted internal heap (abort in MicrophoneSource::process_audio_
+      # on a ~2 KB vector resize).
+      #
+      # These are choice members: psram still emits USE_CAPS_ALLOC=y, but ESPHome
+      # writes the sdkconfig sorted and Kconfig keeps the last assignment, so
+      # USE_MALLOC wins. Check the build's sdkconfig if ESPHome changes that.
+      CONFIG_SPIRAM_USE_MALLOC: "y"
+      # Requests below this try internal first and fall back to PSRAM; larger
+      # ones go to PSRAM first.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "4096"
+      # Internal RAM that malloc never hands out, kept for explicit
+      # internal/DMA allocations: I2S DMA rings at start, Wi-Fi, esp-sr.
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "32768"
+
 external_components:
   # Pinned to a release tag, not @main, so a build is reproducible.
   - source: github://n-IA-hane/esphome-audio-stack@v2026.9.1
@@ -485,3 +504,23 @@ sensor:
         name: "TDM slot 3 level"
         entity_category: ${slot_sensor_category}
         disabled_by_default: true
+
+  # Internal heap headroom (all MALLOC_CAP_INTERNAL), the binding constraint on
+  # this path. A spike at wake word is shorter than any poll, so the useful
+  # number is "Heap low-water mark": the lowest free internal heap since boot.
+  - platform: debug
+    free:
+      name: "Heap free (internal)"
+      entity_category: diagnostic
+    block:
+      name: "Heap largest block (internal)"
+      entity_category: diagnostic
+    min_free:
+      name: "Heap low-water mark (internal)"
+      entity_category: diagnostic
+    psram:
+      name: "PSRAM free"
+      entity_category: diagnostic
+
+debug:
+  update_interval: 5s
