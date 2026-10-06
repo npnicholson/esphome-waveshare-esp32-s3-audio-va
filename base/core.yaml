@@ -1054,23 +1054,30 @@ select:
     restore_value: true
     entity_category: config
     options:
+      - Least sensitive
       - Slightly sensitive
       - Moderately sensitive
       - Very sensitive
     # Probability cutoffs are quantised uint8 (255 = 1.0); the comment on each
-    # line is the floating point value. FAPH = false accepts per hour measured
-    # against the Dinner Party Corpus. Applies to both models whether or not
+    # line is the floating point value. Applies to both models whether or not
     # they are currently enabled - setting a cutoff does not load a model.
+    #
+    # A detection needs the sliding-window sum to be strictly greater than
+    # cutoff * window, so 255 can never fire. 254 is the "100% confidence"
+    # setting: every frame in the window has to score ~1.00.
     on_value:
       - lambda: |-
-          if (x == "Slightly sensitive") {
-            id(hey_mycroft).set_probability_cutoff(230);  // 0.97
+          if (x == "Least sensitive") {
+            id(hey_mycroft).set_probability_cutoff(254);  // 0.996
+            id(alexa).set_probability_cutoff(254);        // 0.996
+          } else if (x == "Slightly sensitive") {
+            id(hey_mycroft).set_probability_cutoff(230);  // 0.90
             id(alexa).set_probability_cutoff(230);        // 0.90
           } else if (x == "Moderately sensitive") {
-            id(hey_mycroft).set_probability_cutoff(191);  // 0.93
+            id(hey_mycroft).set_probability_cutoff(191);  // 0.75
             id(alexa).set_probability_cutoff(191);        // 0.75
           } else if (x == "Very sensitive") {
-            id(hey_mycroft).set_probability_cutoff(128);  // 0.88
+            id(hey_mycroft).set_probability_cutoff(128);  // 0.50
             id(alexa).set_probability_cutoff(128);        // 0.50
           }
 
