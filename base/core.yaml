@@ -823,6 +823,7 @@ script:
           const bool improv_ble     = id(improv_ble_in_progress);
           const bool init_progress  = id(init_in_progress);
           const int  phase          = id(voice_assistant_phase);
+          const bool warn_disconnected = id(led_disconnected_warning).state;
 
           id(check_if_timers_active).execute();
           const bool timers_active = id(is_timer_active);
@@ -845,7 +846,9 @@ script:
             else                set("Rainbow Slow", 1.0, 0.1, 0.1);
             return;
           }
-          if (!wifi_connected || !api_connected) {   // HA unreachable
+          // HA unreachable. With the warning disabled, fall through so the
+          // rest of the state machine (e.g. a local alarm) still shows.
+          if ((!wifi_connected || !api_connected) && warn_disconnected) {
             set("Pulse Medium", 1.0, 0.0, 0.0);
             return;
           }
@@ -871,6 +874,7 @@ script:
               set("Pulse Fast", 1.0, 0.0, 0.0);
               return;
             case ${voice_assist_not_ready_phase_id}:
+              if (!warn_disconnected) break;
               set("Pulse Slow", 1.0, 0.0, 0.0);
               return;
             default: break;
@@ -1257,6 +1261,28 @@ switch:
             lambda: return !id(init_in_progress);
           then:
             - light.turn_off: status_ring
+
+  - platform: template
+    id: led_disconnected_warning
+    name: "Disconnected warning"
+    icon: mdi:lan-disconnect
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    # The red pulse while Home Assistant is unreachable. Off skips it; the ring
+    # otherwise behaves as normal. Gated on init_in_progress like Status ring.
+    on_turn_on:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - script.execute: control_leds
+    on_turn_off:
+      - if:
+          condition:
+            lambda: return !id(init_in_progress);
+          then:
+            - script.execute: control_leds
 
   - platform: template
     id: wake_sound
